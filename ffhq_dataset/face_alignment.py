@@ -3,8 +3,7 @@ import scipy.ndimage
 import os
 import PIL.Image
 
-
-def image_align(src_file, dst_file, face_landmarks, output_size=1024, transform_size=4096, enable_padding=True, x_scale=1, y_scale=1, em_scale=0.1, alpha=False):
+def image_align(src_file, dst_file, face_landmarks, output_size=1024, transform_size=8192, enable_padding=True, x_scale=1, y_scale=1, em_scale=0.1, alpha=False):
         # Align function from FFHQ dataset pre-processing step
         # https://github.com/NVlabs/ffhq-dataset/blob/master/download_ffhq.py
 
@@ -55,8 +54,12 @@ def image_align(src_file, dst_file, face_landmarks, output_size=1024, transform_
 
         # Crop.
         border = max(int(np.rint(qsize * 0.1)), 3)
+
+        border_resizing_factor = 4
+
         crop = (int(np.floor(min(quad[:,0]))), int(np.floor(min(quad[:,1]))), int(np.ceil(max(quad[:,0]))), int(np.ceil(max(quad[:,1]))))
-        crop = (max(crop[0] - border, 0), max(crop[1] - border, 0), min(crop[2] + border, img.size[0]), min(crop[3] + border, img.size[1]))
+        crop = (max(crop[0] - (border*border_resizing_factor), 0), max(crop[1] - (border*border_resizing_factor), 0), min(crop[2] + (border*border_resizing_factor), img.size[0]), min(crop[3] + (border*border_resizing_factor), img.size[1]))
+        #crop = (crop[0] - 100, crop[1] - 100 , crop[2] + 100, crop[3] + 100)
         if crop[2] - crop[0] < img.size[0] or crop[3] - crop[1] < img.size[1]:
             img = img.crop(crop)
             quad -= crop[0:2]
@@ -84,9 +87,9 @@ def image_align(src_file, dst_file, face_landmarks, output_size=1024, transform_
             quad += pad[:2]
 
         # Transform.
-        img = img.transform((transform_size, transform_size), PIL.Image.QUAD, (quad + 0.5).flatten(), PIL.Image.BILINEAR)
-        if output_size < transform_size:
-            img = img.resize((output_size, output_size), PIL.Image.ANTIALIAS)
+        #img = img.transform((transform_size, transform_size), PIL.Image.QUAD, (quad + 0.5).flatten(), PIL.Image.BILINEAR)
+        #if output_size < transform_size:
+        #    img = img.resize((output_size, output_size), PIL.Image.ANTIALIAS)
 
         # Save aligned image.
         img.save(dst_file, 'PNG')
