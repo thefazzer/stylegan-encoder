@@ -1,4 +1,5 @@
 import os
+import zipfile
 import sys
 import bz2
 import argparse
@@ -6,9 +7,16 @@ from keras.utils import get_file
 from ffhq_dataset.face_alignment import image_align
 from ffhq_dataset.landmarks_detector import LandmarksDetector
 import multiprocessing
+import ray, rayrunner
+from rayrunner import ProgressBar
+import time
+import multiprocessing
+from tqdm import tqdm
+from threading import Event
+from typing import Tuple
+from ray.actor import ActorHandle
 
 LANDMARKS_MODEL_URL = 'http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2'
-
 
 def unpack_bz2(src_path):
     data = bz2.BZ2File(src_path).read()
@@ -17,6 +25,45 @@ def unpack_bz2(src_path):
         fp.write(data)
     return dst_path
 
+@ray.remote
+def process_zip_then_increment(zip_file_name: str, pba: ActorHandle) -> int:
+    RAW_IMAGES_DIR = args.raw_dir
+    PID = os.getpid()
+    dir_name = RAW_IMAGES_DIR
+    UNZIPPED_IMAGES_DIR = "{0}/{1}".format(dir_name, PID)
+    extension = ".zip"
+    os.chdir(dir_name) # change directory from working dir to dir with files       
+
+    for item in os.listdir(dir_name): # loop through items in dir
+            if item.endswith(extension): # check for ".zip" extension
+                file_name = os.path.abspath(item) # get full path of files
+                zip_ref = zipfile.ZipFile(zip_file_name) # create zipfile object
+                zip_ref.extractall(UNZIPPED_IMAGES_DIR) # extract file to dir
+                zip_ref.close() # close file
+
+                # process extracted files
+                for img_name in os.listdir(UNZIPPED_IMAGES_DIR):
+                    print('Aligning %s ...' % img_name)
+                    try:
+                        raw_img_path = os.path.join(UNZIPPED_IMAGES_DIR, img_name)
+                        fn = face_img_name = '%s_%02d.png' % (os.path.splitext(img_name)[0], 1)
+                        if os.path.isfile(fn):
+                            continue
+                        print('Getting landmarks...')
+                        for i, face_landmarks in enumerate(landmarks_detector.get_landmarks(raw_img_path), start=1):
+                            try:
+                                print('Starting face alignment...')
+                                face_img_name = '%s_%02d.png' % (os.path.splitext(img_name)[0], i)
+                                aligned_face_path = os.path.join(ALIGNED_IMAGES_DIR, face_img_name)
+                                image_align(raw_img_path, aligned_face_path, face_landmarks, output_size=args.output_size, x_scale=args.x_scale, y_scale=args.y_scale, em_scale=args.em_scale, alpha=args.use_alpha)
+                                print('Wrote result %s' % aligned_face_path)
+                            except:
+                                print("Exception in face alignment!")
+                    except:
+                        print("Exception in landmark detection!")
+
+    pba.update.remote(1)
+    return item
 
 if __name__ == "__main__":
     """
@@ -31,6 +78,7 @@ if __name__ == "__main__":
     parser.add_argument('--y_scale', default=1, help='Scaling factor for y dimension', type=float)
     parser.add_argument('--em_scale', default=0.1, help='Scaling factor for eye-mouth distance', type=float)
     parser.add_argument('--use_alpha', default=False, help='Add an alpha channel for masking', type=bool)
+    parser.add_argument('--unpack_zips', default=True, help='process archived images', type=bool)
 
     args, other_args = parser.parse_known_args()
 
@@ -38,24 +86,22 @@ if __name__ == "__main__":
                                                LANDMARKS_MODEL_URL, cache_subdir='temp'))
     RAW_IMAGES_DIR = args.raw_dir
     ALIGNED_IMAGES_DIR = args.aligned_dir
-
+    UNPACK_ZIPS = args.unpack_zips
+    
     landmarks_detector = LandmarksDetector(landmarks_model_path)
-    for img_name in os.listdir(RAW_IMAGES_DIR):
-        print('Aligning %s ...' % img_name)
-        try:
-            raw_img_path = os.path.join(RAW_IMAGES_DIR, img_name)
-            fn = face_img_name = '%s_%02d.png' % (os.path.splitext(img_name)[0], 1)
-            if os.path.isfile(fn):
-                continue
-            print('Getting landmarks...')
-            for i, face_landmarks in enumerate(landmarks_detector.get_landmarks(raw_img_path), start=1):
-                try:
-                    print('Starting face alignment...')
-                    face_img_name = '%s_%02d.png' % (os.path.splitext(img_name)[0], i)
-                    aligned_face_path = os.path.join(ALIGNED_IMAGES_DIR, face_img_name)
-                    image_align(raw_img_path, aligned_face_path, face_landmarks, output_size=args.output_size, x_scale=args.x_scale, y_scale=args.y_scale, em_scale=args.em_scale, alpha=args.use_alpha)
-                    print('Wrote result %s' % aligned_face_path)
-                except:
-                    print("Exception in face alignment!")
-        except:
-            print("Exception in landmark detection!")
+    image_file_zips = os.listdir(RAW_IMAGES_DIR)
+
+    for f in image_file_zips:
+        assert(f.endswith('.zip'))  # Assume entire directory is zip files
+
+    ray.init(num_cpus=multiprocessing.cpu_count())
+    num_ticks = len(image_file_zips) # number of zip files
+    pb = ProgressBar(num_ticks)
+    actor = pb.actor
+
+    # we are splitting up by chunks of zip files
+    it = ray.util.iter.from_items(image_file_zips, num_shards=multiprocessing.cpu_count())
+    for zipfile_iter in it.gather_async():
+        process_zip_then_increment.remote(zipfile_iter, actor)
+
+    pb.print_until_done()
