@@ -41,8 +41,8 @@ class ProgressBarActor:
         the number of updates since the last call to
         `wait_for_update`, and the total number of completed items.
         """
-        # await self.event.wait()
-        # self.event.wait()
+        await self.event.wait()
+        self.event.wait()
         self.event.clear()
         saved_delta = self.delta
         self.delta = 0

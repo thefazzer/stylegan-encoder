@@ -34,36 +34,46 @@ def process_zip_then_increment(zip_file_name: str, pba: ActorHandle) -> int:
     extension = ".zip"
     os.chdir(dir_name) # change directory from working dir to dir with files       
 
-    for item in os.listdir(dir_name): # loop through items in dir
-            if item.endswith(extension): # check for ".zip" extension
-                file_name = os.path.abspath(item) # get full path of files
-                zip_ref = zipfile.ZipFile(zip_file_name) # create zipfile object
-                zip_ref.extractall(UNZIPPED_IMAGES_DIR) # extract file to dir
-                zip_ref.close() # close file
+    zip_file_names = [x for x in os.listdir(dir_name) if x.endswith(extension)]
 
-                # process extracted files
-                for img_name in os.listdir(UNZIPPED_IMAGES_DIR):
-                    print('Aligning %s ...' % img_name)
-                    try:
-                        raw_img_path = os.path.join(UNZIPPED_IMAGES_DIR, img_name)
-                        fn = face_img_name = '%s_%02d.png' % (os.path.splitext(img_name)[0], 1)
-                        if os.path.isfile(fn):
-                            continue
-                        print('Getting landmarks...')
-                        for i, face_landmarks in enumerate(landmarks_detector.get_landmarks(raw_img_path), start=1):
-                            try:
-                                print('Starting face alignment...')
-                                face_img_name = '%s_%02d.png' % (os.path.splitext(img_name)[0], i)
-                                aligned_face_path = os.path.join(ALIGNED_IMAGES_DIR, face_img_name)
-                                image_align(raw_img_path, aligned_face_path, face_landmarks, output_size=args.output_size, x_scale=args.x_scale, y_scale=args.y_scale, em_scale=args.em_scale, alpha=args.use_alpha)
-                                print('Wrote result %s' % aligned_face_path)
-                            except:
-                                print("Exception in face alignment!")
-                    except:
-                        print("Exception in landmark detection!")
+    progress = 0
 
+    for idx in range(len(zip_file_names)):
+        item = zip_file_names[idx]
+    # for item in os.listdir(dir_name): # loop through items in dir
+        file_path = os.path.abspath(item) # get full path of files
+        zip_ref = zipfile.ZipFile(file_path) # create zipfile object
+        zip_ref.extractall(UNZIPPED_IMAGES_DIR) # extract file to dir
+        zip_ref.close() # close file
+
+        # process extracted files
+        """ process_extracted_files = False
+        if process_extracted_files:
+            for img_name in os.listdir(UNZIPPED_IMAGES_DIR):
+                print('Aligning %s ...' % img_name)
+                try:
+                    raw_img_path = os.path.join(UNZIPPED_IMAGES_DIR, img_name)
+                    fn = face_img_name = '%s_%02d.png' % (os.path.splitext(img_name)[0], 1)
+                    if os.path.isfile(fn):
+                        continue
+                    print('Getting landmarks...')
+                    for i, face_landmarks in enumerate(landmarks_detector.get_landmarks(raw_img_path), start=1):
+                        try:
+                            print('Starting face alignment...')
+                            face_img_name = '%s_%02d.png' % (os.path.splitext(img_name)[0], i)
+                            aligned_face_path = os.path.join(ALIGNED_IMAGES_DIR, face_img_name)
+                            image_align(raw_img_path, aligned_face_path, face_landmarks, output_size=args.output_size, x_scale=args.x_scale, y_scale=args.y_scale, em_scale=args.em_scale, alpha=args.use_alpha)
+                            print('Wrote result %s' % aligned_face_path)
+                        except:
+                            print("Exception in face alignment!")
+                except:
+                print("Exception in landmark detection!")
+"""     
+        progress = idx # / len(zip_file_names)
+        print( f"progress is {0}", progress )
     pba.update.remote(1)
-    return item
+    
+    return progress
 
 if __name__ == "__main__":
     """
@@ -94,7 +104,9 @@ if __name__ == "__main__":
     for f in image_file_zips:
         assert(f.endswith('.zip'))  # Assume entire directory is zip files
 
+    #ray.init(num_cpus=1)
     ray.init(num_cpus=multiprocessing.cpu_count())
+    
     num_ticks = len(image_file_zips) # number of zip files
     pb = ProgressBar(num_ticks)
     actor = pb.actor
@@ -103,5 +115,7 @@ if __name__ == "__main__":
     it = ray.util.iter.from_items(image_file_zips, num_shards=multiprocessing.cpu_count())
     for zipfile_iter in it.gather_async():
         process_zip_then_increment.remote(zipfile_iter, actor)
+
+    
 
     pb.print_until_done()
