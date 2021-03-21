@@ -20,8 +20,10 @@ from ray.exceptions import RayTaskError
 from ray.actor import ActorHandle
 import traceback
 from pathlib import Path
-
-LANDMARKS_MODEL_URL = 'http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2'
+import gc
+import shutil
+from pathlib import Path
+import ntpath
 
 def unpack_bz2(src_path):
     data = bz2.BZ2File(src_path).read()
@@ -30,18 +32,28 @@ def unpack_bz2(src_path):
         fp.write(data)
     return dst_path
 
-landmarks_model_path = unpack_bz2(get_file('shape_predictor_68_face_landmarks.dat.bz2', 
-                                               LANDMARKS_MODEL_URL, cache_subdir='temp'))
-    
-landmarks_detector = LandmarksDetector(landmarks_model_path)
 RAW_IMAGES_DIR = "/mnt/c/dev/media/photos"
 image_files = os.listdir(RAW_IMAGES_DIR)
 ray.init(num_cpus=multiprocessing.cpu_count())
 
+LANDMARKS_MODEL_URL = 'http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2'
+
+landmarks_model_path = unpack_bz2(get_file('shape_predictor_68_face_landmarks.dat.bz2', LANDMARKS_MODEL_URL, cache_subdir='temp'))
+landmarks_model_path_dir = os.path.dirname(landmarks_model_path)
+landmarks_model_path_filename = ntpath.basename(landmarks_model_path)
+
+LandmarksTuple = (landmarks_model_path, landmarks_model_path_dir, landmarks_model_path_filename)
+
 @ray.remote
 def process_image_shards(work):
-    ALIGNED_IMAGES_DIR = "{0}/{1}".format('/mnt/c/dev/media/aligned', os.getpid())
-    #ALIGNED_IMAGES_DIR = '/mnt/c/dev/media/aligned/'
+    landmarks_model_per_thread_dir = os.path.join(LandmarksTuple[1], str(os.getpid()))
+    Path(landmarks_model_per_thread_dir).mkdir(parents=True, exist_ok=True)
+    shutil.copy(LandmarksTuple[0], landmarks_model_per_thread_dir)
+    landmarks_model_perthread_path = "{0}/{1}".format(landmarks_model_per_thread_dir, LandmarksTuple[2])
+
+    landmarks_detector_per_thread = LandmarksDetector(landmarks_model_perthread_path)
+    #ALIGNED_IMAGES_DIR = "{0}/{1}".format('/mnt/c/dev/media/aligned', os.getpid())
+    ALIGNED_IMAGES_DIR = '/mnt/c/dev/media/aligned/'
    
     Path(ALIGNED_IMAGES_DIR).mkdir(parents=True, exist_ok=True)
 
@@ -54,21 +66,22 @@ def process_image_shards(work):
     for it in work:
         for idx in range(len(it)):
             img_name = str(it[idx])
-            # DEV img_name = str(it)
-            print("Aligning {0}\n".format(img_name))
+            # DEV 
+            # img_name = str(it)
+            # print("Aligning {0}\n".format(img_name))
             try:
-                raw_img_path = os.path.join(RAW_IMAGES_DIR, img_name)
+                raw_img_path = os.path.join("/mnt/c/dev/media/photos", img_name)
                 fn = face_img_name = '%s_%02d.png' % (os.path.splitext(img_name)[0], 1)
                 if os.path.isfile(fn):
                     continue
-                print("Getting landmarks for {0}...".format(raw_img_path))
-                for i, face_landmarks in enumerate(landmarks_detector.get_landmarks(raw_img_path), start=1):
+                # print("Getting landmarks for {0}...".format(raw_img_path))
+                for i, face_landmarks in enumerate(landmarks_detector_per_thread.get_landmarks(raw_img_path), start=1):
                     try:
                         face_img_name = '%s_%02d.png' % (os.path.splitext(img_name)[0], i)
-                        print("Starting face alignment for {0}...".format(face_img_name))
+                        # print("Starting face alignment for {0}...".format(face_img_name))
                         aligned_face_path = os.path.join(ALIGNED_IMAGES_DIR, face_img_name)
                         image_align(raw_img_path, aligned_face_path, face_landmarks, output_size=output_size, x_scale=x_scale, y_scale=y_scale, em_scale=em_scale, alpha=use_alpha)
-                        print('Wrote result %s' % aligned_face_path)
+                        # print('Wrote result %s' % aligned_face_path)
                     except Exception:
                         try:
                             raise TypeError("Again !?!")
@@ -76,18 +89,20 @@ def process_image_shards(work):
                             pass
                         traceback.print_exc()
                         print("Exception in face alignment!")
+                # print("Calling GC collect!")
+                # gc.collect()
             except:
                 print("Exception in landmark detection!")
-
+    
 it = (
-    ray.util.iter.from_items(image_files, num_shards=multiprocessing.cpu_count()).batch(50)
+    ray.util.iter.from_items(image_files, num_shards=multiprocessing.cpu_count()).batch(100)
 )
 
 # work 
 work = [process_image_shards.remote(img_shard) for img_shard in it.shards()]
 
 try:
-    # DEV SYNCHRONOUS
+    #  DEV SYNCHRONOUS
     # process_image_shards(image_files)
 
     ray.get(work)
